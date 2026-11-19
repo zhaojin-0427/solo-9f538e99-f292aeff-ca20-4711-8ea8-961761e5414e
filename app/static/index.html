@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>空运危险品保管链控制台</title>
+<style>
+  :root { --ok:#1a7f37; --bad:#cf222e; --muted:#656d76; --line:#d0d7de; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0; padding: 24px; background: #f6f8fa; color: #1f2328; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1180px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  input, textarea, select { width: 100%; padding: 7px 9px; border: 1px solid var(--line);
+         border-radius: 6px; font: inherit; font-size: 13px; }
+  textarea { min-height: 150px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  button { margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px;
+           background: #0969da; color: #fff; font-size: 13px; cursor: pointer; }
+  button:hover { background: #0860ca; }
+  button.secondary { background: #eaeef2; color: #1f2328; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  pre { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px;
+        padding: 10px; font-size: 12px; overflow: auto; max-height: 420px; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; }
+  th { background: #f6f8fa; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+  .pill.ok { background: #dafbe1; } .pill.bad { background: #ffebe9; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  #status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+<h1>空运危险品保管链控制台</h1>
+<p class="sub">录入运单与扫描批次、查询可信交接前缀。OpenAPI 交互文档见 <a href="/docs">/docs</a>。</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>1. 创建运单（固定起始保管方）</h2>
+    <label>运单号</label><input id="wb-id" placeholder="AWB-001" value="AWB-001" />
+    <label>起始保管方</label><input id="wb-origin" placeholder="HKG-WAREHOUSE" value="HKG-WAREHOUSE" />
+    <button onclick="createWaybill()">创建运单</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. 批量提交扫描（交接 / 撤回）</h2>
+    <label>运单号</label><input id="batch-wb" value="AWB-001" />
+    <label>批次 JSON（HANDOVER / WITHDRAWAL）</label>
+    <textarea id="batch-json">{
+  "scans": [
+    {"scan_id": "S1", "revision": 1, "ts_utc": "2026-11-18T08:00:00Z", "giver": "HKG-WAREHOUSE", "receiver": "CX-CARGO"},
+    {"scan_id": "S2", "revision": 1, "ts_utc": "2026-11-18T10:30:00Z", "giver": "CX-CARGO", "receiver": "PVG-WAREHOUSE"}
+  ]
+}</textarea>
+    <div class="hint">撤回示例：{"scan_id":"S2","revision":2,"event_type":"WITHDRAWAL"}；修订号必须为正整数且递增。</div>
+    <button onclick="submitBatch()">提交批次</button>
+  </div>
+
+  <div class="card">
+    <h2>3. 查询保管链</h2>
+    <label>运单号</label>
+    <div class="row"><input id="query-wb" value="AWB-001" />
+      <button onclick="queryChain()" style="margin-top:0">查询</button></div>
+    <div id="chain-summary" style="margin-top:10px"></div>
+    <div id="chain-table"></div>
+  </div>
+
+  <div class="card">
+    <h2>原始响应</h2>
+    <pre id="raw">（提交或查询后显示）</pre>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const setStatus = (msg, bad) => {
+  const el = $('status'); el.textContent = msg;
+  el.style.color = bad ? 'var(--bad)' : 'var(--ok)';
+};
+async function call(url, method, body) {
+  const res = await fetch(url, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  $('raw').textContent = JSON.stringify(data, null, 2);
+  if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : (data.error || res.status));
+  return data;
+}
+async function createWaybill() {
+  try {
+    await call('/api/waybills', 'POST', {waybill_id: $('wb-id').value.trim(), origin_party: $('wb-origin').value.trim()});
+    setStatus('运单已创建');
+  } catch (e) { setStatus('失败：' + e.message, true); }
+}
+async function submitBatch() {
+  try {
+    const body = JSON.parse($('batch-json').value);
+    const data = await call(`/api/waybills/${encodeURIComponent($('batch-wb').value.trim())}/scans/batch`, 'POST', body);
+    setStatus(`批次已提交：写入 ${data.applied} 笔，幂等 ${data.idempotent_duplicates} 笔`);
+    renderChain(data.chain);
+  } catch (e) { setStatus('整批拒绝（旧链保留）：' + e.message, true); }
+}
+async function queryChain() {
+  try {
+    const data = await call(`/api/waybills/${encodeURIComponent($('query-wb').value.trim())}/chain`, 'GET');
+    setStatus('查询完成'); renderChain(data);
+  } catch (e) { setStatus('查询失败：' + e.message, true); }
+}
+function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function renderChain(c) {
+  const intact = c.chain_intact;
+  $('chain-summary').innerHTML =
+    `当前可确认保管方：<b>${esc(c.current_custodian)}</b><br/>` +
+    `链状态：<span class="pill ${intact ? 'ok' : 'bad'}">${intact ? '完整可信' : '存在断链'}</span> ` +
+    (intact ? '' : `原因 <b>${esc(c.break_reason)}</b> — ${esc(c.break_detail)}`);
+  const rows = [...c.verified_prefix.map(v => ({...v, _v: true})),
+                ...c.unverified_scans.map(v => ({...v, _v: false}))];
+  if (!rows.length) { $('chain-table').innerHTML = '<p class="hint">暂无已采纳的交接扫描。</p>'; return; }
+  $('chain-table').innerHTML = '<table><tr><th>状态</th><th>scan_id</th><th>修订</th><th>UTC 时刻</th>'
+    + '<th>交出方</th><th>接收方</th><th>未证实原因</th></tr>' + rows.map(r =>
+    `<tr><td><span class="pill ${r._v ? 'ok' : 'bad'}">${r._v ? '已证实' : '未证实'}</span></td>`
+    + `<td>${esc(r.scan_id)}</td><td>${r.revision}</td><td>${esc(r.ts_utc)}</td>`
+    + `<td>${esc(r.giver)}</td><td>${esc(r.receiver)}</td>`
+    + `<td>${esc(r.unverified_reason ?? '')}</td></tr>`).join('') + '</table>';
+}
+</script>
+</body>
+</html>

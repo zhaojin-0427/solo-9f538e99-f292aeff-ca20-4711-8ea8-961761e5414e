@@ -1,0 +1,21 @@
+services:
+  chain-api:
+    build: .
+    image: cargo-chain-api:latest
+    container_name: cargo-chain-api
+    ports:
+      - "8000:8000"
+    environment:
+      APP_DATA_DIR: /data
+      APP_BUSY_TIMEOUT_MS: "5000"
+    volumes:
+      - chain-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/waybills').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  chain-data:
