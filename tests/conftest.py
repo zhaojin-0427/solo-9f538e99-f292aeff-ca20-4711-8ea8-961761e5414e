@@ -19,15 +19,20 @@ def client(monkeypatch):
     # Import after env vars are set so config picks up the temp path.
     import importlib
 
-    from app import config, database, main
+    from app import config, database, main, services, summary
 
     importlib.reload(config)
     importlib.reload(database)
+    importlib.reload(summary)  # resets the process-wide backfill thread guard
+    importlib.reload(services)
     importlib.reload(main)
 
     database.init_db()
-    with TestClient(main.app) as c:
-        yield c
+    try:
+        with TestClient(main.app) as c:
+            yield c
+    finally:
+        summary.stop_backfill()
 
 
 def make_waybill(client, wid="AWB-1", origin="ORIG"):

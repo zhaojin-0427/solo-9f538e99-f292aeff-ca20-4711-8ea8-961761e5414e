@@ -75,6 +75,16 @@
   </div>
 
   <div class="card">
+    <h2>4. 路线去向汇总（读持久化汇总）</h2>
+    <label>有序保管方名单（从起始保管方开始，逗号分隔，可重复）</label>
+    <input id="route-parties" value="HKG-WAREHOUSE, CX-CARGO" />
+    <div class="hint">仅统计可信保管链以该路线开头的运单；补建未完成时返回 BUILDING（503）。</div>
+    <button onclick="queryRoute()">查询路线去向</button>
+    <div id="route-status" style="margin-top:8px;font-size:12px"></div>
+    <div id="route-table"></div>
+  </div>
+
+  <div class="card">
     <h2>原始响应</h2>
     <pre id="raw">（提交或查询后显示）</pre>
   </div>
@@ -94,7 +104,11 @@ async function call(url, method, body) {
   });
   const data = await res.json().catch(() => ({}));
   $('raw').textContent = JSON.stringify(data, null, 2);
-  if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : (data.error || res.status));
+  if (!res.ok) {
+    const err = new Error(data.detail ? JSON.stringify(data.detail) : (data.error || res.status));
+    err.payload = data;
+    throw err;
+  }
   return data;
 }
 async function createWaybill() {
@@ -133,6 +147,30 @@ function renderChain(c) {
     + `<td>${esc(r.scan_id)}</td><td>${r.revision}</td><td>${esc(r.ts_utc)}</td>`
     + `<td>${esc(r.giver)}</td><td>${esc(r.receiver)}</td>`
     + `<td>${esc(r.unverified_reason ?? '')}</td></tr>`).join('') + '</table>';
+}
+async function queryRoute() {
+  const parties = $('route-parties').value.split(',').map(s => s.trim()).filter(Boolean);
+  try {
+    const data = await call('/api/route-summary', 'POST', {parties});
+    $('route-status').innerHTML =
+      `状态：<span class="pill ok">READY</span> 命中运单 <b>${data.matched_waybills}</b> 张` +
+      `；其中在此处无后续扫描/即断链 <b>${data.no_further_scan_count}</b> 张`;
+    const rows = [...data.next_custodians.map(g => ({party: g.next_party, n: g.waybill_count, end: false})),
+                  ...(data.no_further_scan_count ? [{party: '（无后续可信交接）', n: data.no_further_scan_count, end: true}] : [])];
+    if (!rows.length) { $('route-table').innerHTML = '<p class="hint">没有运单的可信链以该路线开头。</p>'; return; }
+    $('route-table').innerHTML = '<table><tr><th>下一保管方</th><th>运单数</th></tr>'
+      + rows.map(r => `<tr><td>${r.end ? '<i>' + esc(r.party) + '</i>' : esc(r.party)}</td><td>${r.n}</td></tr>`).join('')
+      + '</table>';
+  } catch (e) {
+    const p = e.payload || {};
+    if (p.status === 'BUILDING') {
+      $('route-status').innerHTML =
+        `<span class="pill bad">BUILDING</span> 汇总补建中，待补建运单：<b>${esc(p.detail?.match(/pending_waybills=(\d+)/)?.[1] ?? '?')}</b>，请稍后重试`;
+    } else {
+      $('route-status').innerHTML = `<span class="pill bad">查询失败</span> ${esc(e.message)}`;
+    }
+    $('route-table').innerHTML = '';
+  }
 }
 </script>
 </body>

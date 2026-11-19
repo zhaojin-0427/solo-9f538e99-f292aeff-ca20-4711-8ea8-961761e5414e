@@ -81,6 +81,33 @@ check("openapi schema reachable", st == 200 and "paths" in body)
 st, body = call("GET", "/", raw=True)
 check("console page reachable", st == 200 and b"<!DOCTYPE html>" in body)
 
+# route-prefix summary
+st, body = call("GET", "/api/route-summary/status")
+check("summary status ready", st == 200 and body["ready"] is True, body)
+
+st, body = call("POST", "/api/route-summary", {"parties": ["ORIG", "B", "C"]})
+check("route summary 200", st == 200 and body["ready"] is True, body)
+# chain ORIG->B->C->D verified, then SIMULTANEOUS at E/F: trusted chain ends at D
+groups = {g["next_party"]: g["waybill_count"] for g in body["next_custodians"]}
+check("next custodian D counted once", groups == {"D": 1}, body)
+check("no terminal at depth 3", body["no_further_scan_count"] == 0, body)
+
+st, body = call("POST", "/api/route-summary", {"parties": ["ORIG", "B", "C", "D"]})
+check("terminal at end of trusted chain", st == 200
+      and body["matched_waybills"] == 1
+      and body["no_further_scan_count"] == 1, body)
+
+st, body = call("POST", "/api/route-summary", {"parties": ["ORIG", "B", "C", "D", "E"]})
+check("route longer than chain does not match", st == 200
+      and body["matched_waybills"] == 0, body)
+
+st, body = call("POST", "/api/route-summary", {"parties": []})
+check("empty route rejected", st == 422, body)
+st, body = call("POST", "/api/route-summary", {"parties": ["ORIG", "  "]})
+check("blank party rejected", st == 422, body)
+
+print("ALL SMOKE CHECKS PASSED")
+
 # validation: naive datetime
 st, body = call("POST", "/api/waybills/AWB-SMOKE/scans/batch", {"scans": [
     {"scan_id": "S9", "revision": 1, "ts_utc": "2026-11-18T12:00:00", "giver": "D", "receiver": "E"},

@@ -37,6 +37,7 @@ class DomainValidation(Exception):
 # Waybills
 # --------------------------------------------------------------------------- #
 def create_waybill(conn: sqlite3.Connection, body: WaybillCreate) -> dict:
+    from . import summary
     from .database import transaction
 
     with transaction(conn):
@@ -49,6 +50,10 @@ def create_waybill(conn: sqlite3.Connection, body: WaybillCreate) -> dict:
             "INSERT INTO waybills (id, origin_party, created_at) VALUES (?, ?, ?)",
             (body.waybill_id, body.origin_party, utcnow_iso()),
         )
+        # Materialize the initial contribution in the same transaction: a
+        # waybill with no verified handover terminates at its origin party.
+        # Waybill and its summary row therefore appear together.
+        summary.rebuild_waybill_summary(conn, body.waybill_id, bump_version=False)
     return {"waybill_id": body.waybill_id, "origin_party": body.origin_party}
 
 
@@ -67,6 +72,7 @@ def get_waybill(conn: sqlite3.Connection, waybill_id: str) -> sqlite3.Row:
 def apply_batch(
     conn: sqlite3.Connection, waybill_id: str, batch: BatchSubmit
 ) -> BatchResponse:
+    from . import summary
     from .database import transaction
 
     get_waybill(conn, waybill_id)  # 404-style check before opening the txn
@@ -84,6 +90,12 @@ def apply_batch(
             if entry.event_type == "WITHDRAWAL":
                 withdrawn.append(entry.scan_id)
             applied += 1
+
+        if applied > 0:
+            # Replace this waybill's route-prefix contributions in the same
+            # transaction: scans and the counts they drive take effect
+            # together, and a rollback restores both the chain and the summary.
+            summary.rebuild_waybill_summary(conn, waybill_id, bump_version=True)
 
     # Recompute against the freshly committed snapshot.  Scan writes and the
     # returned query result therefore become visible together.

@@ -9,15 +9,27 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
-from . import config, services
+from . import config, services, summary
 from .database import connect, init_db
-from .schemas import BatchResponse, BatchSubmit, ChainResponse, WaybillCreate
+from .schemas import (
+    BatchResponse,
+    BatchSubmit,
+    ChainResponse,
+    RouteQuery,
+    RouteSummaryResponse,
+    SummaryStatusResponse,
+    WaybillCreate,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> None:
     init_db()
+    # Reuse the existing SQLite volume: build the route-prefix summary for
+    # legacy waybills in the background.  New writes maintain it inline.
+    summary.initialize_summary(config.DB_PATH)
     yield
+    summary.stop_backfill()
 
 
 app = FastAPI(
@@ -51,6 +63,21 @@ async def conflict_handler(_: Request, exc: services.DomainConflict) -> JSONResp
 @app.exception_handler(services.DomainValidation)
 async def not_found_handler(_: Request, exc: services.DomainValidation) -> JSONResponse:
     return JSONResponse(status_code=404, content={"error": "not_found", "detail": str(exc)})
+
+
+@app.exception_handler(summary.SummaryNotReady)
+async def summary_not_ready_handler(_: Request, exc: summary.SummaryNotReady) -> JSONResponse:
+    # 503: the legacy-volume backfill has not finished yet; queries are not
+    # served until every committed waybill is reflected in the summary.
+    return JSONResponse(
+        status_code=503,
+        content={
+            "ready": False,
+            "status": "BUILDING",
+            "error": "summary_not_ready",
+            "detail": str(exc),
+        },
+    )
 
 
 @app.exception_handler(ValidationError)
@@ -106,6 +133,39 @@ def query_chain(
 ) -> ChainResponse:
     """返回可信连续交接前缀、首处断链原因与当前可确认保管方。"""
     return services.compute_chain(conn, waybill_id)
+
+
+# --------------------------------------------------------------------------- #
+# Route-prefix summary queries (read the materialized summary only)
+# --------------------------------------------------------------------------- #
+@app.post(
+    "/api/route-summary",
+    response_model=RouteSummaryResponse,
+    tags=["route-summary"],
+)
+def query_route_summary(
+    query: RouteQuery, conn: sqlite3.Connection = Depends(get_conn)
+) -> RouteSummaryResponse:
+    """按路线前缀统计运单去向。
+
+    输入从起始保管方开始的有序名单（允许重复保管方），仅统计可信保管链
+    以该路线开头的运单；查询只读取已提交的持久化汇总（一次 GROUP BY），
+    不逐单查链。补建未完成时返回 503（status=BUILDING）。
+    """
+    return summary.query_route_summary(conn, query.parties)
+
+
+@app.get(
+    "/api/route-summary/status",
+    response_model=SummaryStatusResponse,
+    tags=["route-summary"],
+)
+def route_summary_status(
+    conn: sqlite3.Connection = Depends(get_conn),
+) -> SummaryStatusResponse:
+    """汇总补建进度：READY 可查；BUILDING 时返回待补建运单数。"""
+    state = summary.get_status(conn)
+    return SummaryStatusResponse(**state)
 
 
 # --------------------------------------------------------------------------- #

@@ -46,6 +46,41 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scans_waybill ON scans (waybill_id, scan_id, revision);
+
+-- Per-waybill chain versioning for the materialized route-prefix summary.
+-- materialized_version equals chain_version when route_prefix_contribs is
+-- in sync; NULL means the legacy backfill has not reached this waybill yet.
+CREATE TABLE IF NOT EXISTS waybill_chain_versions (
+    waybill_id            TEXT PRIMARY KEY REFERENCES waybills(id),
+    chain_version         INTEGER NOT NULL DEFAULT 0,
+    materialized_version  INTEGER,
+    updated_at            TEXT NOT NULL
+);
+
+-- One row per (waybill, verified-prefix).  A waybill whose trusted chain has
+-- d verified handovers contributes d "next custodian" rows plus exactly one
+-- terminal row (next_party = '') marking "no further verified handover here"
+-- (either no later scan at all, or the chain breaks immediately afterwards).
+CREATE TABLE IF NOT EXISTS route_prefix_contribs (
+    waybill_id      TEXT NOT NULL REFERENCES waybills(id),
+    prefix_depth    INTEGER NOT NULL CHECK (prefix_depth > 0),
+    prefix_key      TEXT NOT NULL,
+    next_party      TEXT NOT NULL,
+    chain_version   INTEGER NOT NULL,
+    PRIMARY KEY (waybill_id, prefix_depth, prefix_key)
+);
+
+-- Aggregation index: a route query is a single GROUP BY on these two columns,
+-- i.e. it reads only the committed summary, never the per-scan chain tables.
+CREATE INDEX IF NOT EXISTS idx_rpc_lookup
+    ON route_prefix_contribs (prefix_depth, prefix_key, next_party);
+
+-- Single-row build state, durable across restarts.
+CREATE TABLE IF NOT EXISTS summary_state (
+    id                INTEGER PRIMARY KEY CHECK (id = 1),
+    status            TEXT NOT NULL CHECK (status IN ('BUILDING', 'READY')),
+    updated_at        TEXT NOT NULL
+);
 """
 
 

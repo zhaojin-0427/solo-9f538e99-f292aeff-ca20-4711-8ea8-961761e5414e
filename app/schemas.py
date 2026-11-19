@@ -163,6 +163,63 @@ class BatchResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Route-prefix summary
+# --------------------------------------------------------------------------- #
+class RouteQuery(BaseModel):
+    """Ordered custodian list starting at the origin custodian.
+
+    Duplicate custodians are allowed (a route may revisit a party); each
+    waybill is counted in at most one group of the resulting aggregation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parties: list[str] = Field(
+        min_length=1,
+        description="从起始保管方开始的有序保管方名单，可包含重复保管方",
+    )
+
+    @field_validator("parties")
+    @classmethod
+    def _strip_each_party(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                raise ValueError("each party must be a string")
+            value = value.strip()
+            if not value:
+                raise ValueError("parties must not contain empty custodian names")
+            cleaned.append(value)
+        return cleaned
+
+
+class NextCustodianCount(BaseModel):
+    next_party: str
+    waybill_count: int
+
+
+class RouteSummaryResponse(BaseModel):
+    ready: bool
+    status: Literal["READY", "BUILDING"]
+    route: list[str]
+    matched_waybills: int = Field(
+        description="命中该路线前缀的运单总数（各下一保管方分组互不相交）"
+    )
+    next_custodians: list[NextCustodianCount] = Field(
+        description="按下一保管方分组的运单数；在此处无后续可信交接的单不计入"
+    )
+    no_further_scan_count: int = Field(
+        description="在此处无后续扫描或紧接着断链（可信链到此结束）的运单数"
+    )
+
+
+class SummaryStatusResponse(BaseModel):
+    ready: bool
+    status: Literal["READY", "BUILDING"]
+    pending_waybills: int | None = None
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def utcnow_iso() -> str:
